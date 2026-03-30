@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CSV → TCX Converter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 40px; max-width: 700px; margin: auto; }
+    h1 { font-size: 24px; }
+    input, button { margin-top: 10px; }
+    button { padding: 10px 15px; }
+  </style>
+</head>
+<body>
+
+<h1>CSV → TCX Converter</h1>
+<p>Upload your CSV file (with Time + HeartRate) and download a TCX file for Strava.</p>
+
+<input type="file" id="fileInput" accept=".csv">
+<br>
+<button onclick="convert()">Convert to TCX</button>
+
+<script>
+function convert() {
+  const file = document.getElementById('fileInput').files[0];
+  if (!file) {
+    alert('Please select a CSV file');
+    return;
+  }
+
+  Papa.parse(file, {
+    header: true,
+    complete: function(results) {
+      const data = results.data;
+
+      // detect HR column
+      let hrKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('heartrate'));
+      let timeKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('time'));
+
+      if (!hrKey || !timeKey) {
+        alert('Could not find Time or HeartRate column');
+        return;
+      }
+
+      const startTime = data[0][timeKey];
+
+      let tcx = [];
+      tcx.push('<?xml version="1.0" encoding="UTF-8"?>');
+      tcx.push('<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">');
+      tcx.push('<Activities>');
+      tcx.push('<Activity Sport="Other">');
+      tcx.push(`<Id>${startTime}</Id>`);
+      tcx.push(`<Lap StartTime="${startTime}">`);
+      tcx.push('<TotalTimeSeconds>0</TotalTimeSeconds>');
+      tcx.push('<DistanceMeters>0</DistanceMeters>');
+      tcx.push('<Track>');
+
+      data.forEach(row => {
+        const time = row[timeKey];
+        const hr = row[hrKey];
+
+        if (time && hr && hr !== 'NaN') {
+          tcx.push('<Trackpoint>');
+          tcx.push(`<Time>${time}</Time>`);
+          tcx.push(`<HeartRateBpm><Value>${parseInt(hr)}</Value></HeartRateBpm>`);
+          tcx.push('</Trackpoint>');
+        }
+      });
+
+      tcx.push('</Track>');
+      tcx.push('</Lap>');
+      tcx.push('</Activity>');
+      tcx.push('</Activities>');
+      tcx.push('</TrainingCenterDatabase>');
+
+      const blob = new Blob([tcx.join('\n')], { type: 'application/xml' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'activity.tcx';
+      a.click();
+    }
+  });
+}
+</script>
+
+</body>
+</html>
