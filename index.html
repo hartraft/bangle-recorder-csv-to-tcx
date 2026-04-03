@@ -1,87 +1,141 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>CSV → TCX Converter</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 40px; max-width: 700px; margin: auto; }
-    h1 { font-size: 24px; }
-    input, button { margin-top: 10px; }
-    button { padding: 10px 15px; }
-  </style>
+<meta charset="UTF-8">
+<title>CSV → TCX</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<style>
+body{background:#111;color:#eee;font-family:Arial;padding:40px;max-width:900px;margin:auto}
+#dropZone{border:2px dashed #555;padding:30px;text-align:center;margin-bottom:10px}
+button{margin:5px;padding:10px;background:#333;color:#eee;border:none}
+</style>
 </head>
 <body>
 
-<h1>CSV → TCX Converter</h1>
-<p>Upload your CSV file (with Time + HeartRate) and download a TCX file for Strava.</p>
+<h1>CSV → TCX (Robust Fix)</h1>
+<input type="file" id="fileInput" multiple>
+<div id="dropZone">Drop CSV files</div>
+<button onclick="processFiles()">Load</button>
+<button onclick="exportTCX()">Export TCX</button>
 
-<input type="file" id="fileInput" accept=".csv">
-<br>
-<button onclick="convert()">Convert to TCX</button>
+<pre id="log"></pre>
+<canvas id="chart"></canvas>
 
 <script>
-function convert() {
-  const file = document.getElementById('fileInput').files[0];
-  if (!file) {
-    alert('Please select a CSV file');
-    return;
+let files=[],data=[],chart;
+const logEl=document.getElementById('log');
+
+function log(msg){ logEl.textContent += msg + "\n"; }
+
+document.getElementById('fileInput').onchange=e=>files=[...e.target.files];
+
+document.getElementById('dropZone').ondrop=e=>{
+ e.preventDefault();
+ files=[...e.dataTransfer.files];
+};
+
+document.getElementById('dropZone').ondragover=e=>e.preventDefault();
+
+function parseTime(t){
+ if(!t) return null;
+ return new Date(t.endsWith('Z')?t:t+'Z');
+}
+
+function processFiles(){
+ data=[];
+ logEl.textContent="";
+
+ files.forEach(f=>{
+  Papa.parse(f,{header:true,skipEmptyLines:true,complete:r=>{
+   const rows=r.data;
+   if(!rows.length){ log('Empty file'); return; }
+
+   const keys=Object.keys(rows[0]);
+   log('Columns: ' + keys.join(', '));
+
+   const timeKey=keys.find(k=>k.toLowerCase().includes('time'));
+
+   // Try multiple HR possibilities
+   const hrCandidates=keys.filter(k=>k.toLowerCase().includes('heartrate'));
+
+   if(!timeKey){ log('No time column'); return; }
+   if(!hrCandidates.length){ log('No HR column'); return; }
+
+   log('Using time column: ' + timeKey);
+   log('HR candidates: ' + hrCandidates.join(', '));
+
+   rows.forEach(row=>{
+     const t=parseTime(row[timeKey]);
+
+     // pick first valid HR value
+     let hr=null;
+     for(const key of hrCandidates){
+       if(row[key] && !isNaN(row[key])){
+         hr=+row[key];
+         break;
+       }
+     }
+
+     if(t && hr !== null){
+       data.push({x:t,y:hr});
+     }
+   });
+  }});
+ });
+
+ setTimeout(()=>{
+   if(!data.length){ log('No valid data parsed'); return; }
+
+   data.sort((a,b)=>a.x-b.x);
+   log('Parsed points: ' + data.length);
+   draw();
+ },500);
+}
+
+function draw(){
+ if(chart) chart.destroy();
+
+ chart=new Chart(document.getElementById('chart'),{
+  type:'line',
+  data:{datasets:[{label:'Heart Rate',data:data}]},
+  options:{
+    scales:{x:{type:'time'}}
   }
+ });
+}
 
-  Papa.parse(file, {
-    header: true,
-    complete: function(results) {
-      const data = results.data;
+function exportTCX(){
+ if(!data.length) return alert('No data');
 
-      // detect HR column
-      let hrKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('heartrate'));
-      let timeKey = Object.keys(data[0]).find(k => k.toLowerCase().includes('time'));
+ const start=data[0].x;
+ const end=data[data.length-1].x;
+ const duration=(end-start)/1000;
 
-      if (!hrKey || !timeKey) {
-        alert('Could not find Time or HeartRate column');
-        return;
-      }
+ let xml=[];
+ xml.push('<?xml version="1.0" encoding="UTF-8"?>');
+ xml.push('<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">');
+ xml.push('<Activities><Activity Sport="Other">');
+ xml.push(`<Id>${start.toISOString()}</Id>`);
+ xml.push(`<Lap StartTime="${start.toISOString()}">`);
+ xml.push(`<TotalTimeSeconds>${Math.floor(duration)}</TotalTimeSeconds>`);
+ xml.push('<DistanceMeters>0</DistanceMeters><Track>');
 
-      const startTime = data[0][timeKey];
+ data.forEach(p=>{
+  xml.push('<Trackpoint>');
+  xml.push(`<Time>${p.x.toISOString()}</Time>`);
+  xml.push(`<HeartRateBpm><Value>${p.y}</Value></HeartRateBpm>`);
+  xml.push('</Trackpoint>');
+ });
 
-      let tcx = [];
-      tcx.push('<?xml version="1.0" encoding="UTF-8"?>');
-      tcx.push('<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">');
-      tcx.push('<Activities>');
-      tcx.push('<Activity Sport="Other">');
-      tcx.push(`<Id>${startTime}</Id>`);
-      tcx.push(`<Lap StartTime="${startTime}">`);
-      tcx.push('<TotalTimeSeconds>0</TotalTimeSeconds>');
-      tcx.push('<DistanceMeters>0</DistanceMeters>');
-      tcx.push('<Track>');
+ xml.push('</Track></Lap></Activity></Activities></TrainingCenterDatabase>');
 
-      data.forEach(row => {
-        const time = row[timeKey];
-        const hr = row[hrKey];
-
-        if (time && hr && hr !== 'NaN') {
-          tcx.push('<Trackpoint>');
-          tcx.push(`<Time>${time}</Time>`);
-          tcx.push(`<HeartRateBpm><Value>${parseInt(hr)}</Value></HeartRateBpm>`);
-          tcx.push('</Trackpoint>');
-        }
-      });
-
-      tcx.push('</Track>');
-      tcx.push('</Lap>');
-      tcx.push('</Activity>');
-      tcx.push('</Activities>');
-      tcx.push('</TrainingCenterDatabase>');
-
-      const blob = new Blob([tcx.join('\n')], { type: 'application/xml' });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'activity.tcx';
-      a.click();
-    }
-  });
+ const blob=new Blob([xml.join('\n')],{type:'application/xml'});
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(blob);
+ a.download='activity.tcx';
+ a.click();
 }
 </script>
 
