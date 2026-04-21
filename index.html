@@ -441,15 +441,22 @@ async function listFiles() {
     const result = await watchEval('require("Storage").list()');
     log('Raw file list: ' + result);
 
+    // espruinoEval returns the Espruino REPL representation of the value.
+    // Arrays come back as comma-separated strings without brackets, e.g.:
+    //   "foo.js,bar.csv\1,baz.json"
+    // StorageFile chunks have a \1 suffix — strip those and deduplicate.
     let allFiles;
     try {
-      // Result may be bare (no quotes) or JSON
+      // Try JSON first (in case a future uart.js version wraps it)
       allFiles = JSON.parse(result);
     } catch {
-      throw new Error('Could not parse file list: ' + String(result).slice(0, 100));
+      // Fall back: split on comma, strip \1 chunk suffixes, deduplicate
+      allFiles = [...new Set(
+        String(result).split(',').map(f => f.trim().replace(/\\\d+$/, '').replace(/\x01/g, '')).filter(Boolean)
+      )];
     }
 
-    if (!Array.isArray(allFiles)) throw new Error('Unexpected response type: ' + typeof allFiles);
+    if (!Array.isArray(allFiles)) throw new Error('Unexpected response: ' + String(result).slice(0, 80));
 
     const files = allFiles.filter(f =>
       f.toLowerCase().includes('recorder') && f.toLowerCase().includes('.csv')
@@ -502,15 +509,17 @@ async function onFileSelect(row, f, list) {
 
 // ── Download file over BLE using uart.js espruinoReceiveFile ─────────────────
 async function downloadFile(filename) {
+  // Strip StorageFile chunk suffix if present (e.g. "recorder.log0.csv\1" → "recorder.log0.csv")
+  const cleanName = filename.replace(/\\?\x01|\\\d+$/, '');
   const prog = $('dlProgress'), fill = $('progFill');
-  $('dlFilename').textContent = filename;
+  $('dlFilename').textContent = cleanName;
   prog.classList.add('visible');
   fill.style.width = '2%';
-  log('Downloading ' + filename + '…', 'i');
+  log('Downloading ' + cleanName + '…', 'i');
 
   try {
     // espruinoReceiveFile returns a Promise that resolves with the file contents
-    const content = await uartConn.espruinoReceiveFile(filename, {
+    const content = await uartConn.espruinoReceiveFile(cleanName, {
       progress: (bytes, total) => {
         fill.style.width = total
           ? Math.round(bytes / total * 100) + '%'
@@ -525,7 +534,7 @@ async function downloadFile(filename) {
 
     const lines = content.trim().split('\n').length;
     log('Received ' + lines + ' lines', 'ok');
-    processCSV(content.trim(), filename);
+    processCSV(content.trim(), cleanName);
 
   } catch (err) {
     $('dlProgress').classList.remove('visible');
