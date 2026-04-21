@@ -486,6 +486,8 @@ function renderFileList(files) {
   files.forEach(f => {
     const row = document.createElement('div');
     row.className = 'file-row';
+    row.dataset.name = f.name;
+    row.dataset.source = f.source;
     row.innerHTML = `
       <div class="file-radio"></div>
       <div class="file-name">${f.name}</div>
@@ -537,8 +539,25 @@ async function downloadFile(filename) {
     processCSV(content.trim(), cleanName);
 
   } catch (err) {
-    $('dlProgress').classList.remove('visible');
-    log('Download failed: ' + err.message, 'e');
+    const reason = err?.message || String(err) || 'unknown error';
+    log('espruinoReceiveFile failed (' + reason + '), trying Storage.read fallback…', 'w');
+    try {
+      fill.style.width = '95%';
+      const fallback = await watchEval(`(function(){
+        var s = require("Storage").read(${JSON.stringify(cleanName)});
+        return s===undefined ? null : s;
+      })()`);
+      fill.style.width = '100%';
+      prog.classList.remove('visible');
+      if (!fallback || !String(fallback).trim()) throw new Error('File appears to be empty or unreadable');
+      const text = String(fallback).trim();
+      const lines = text.split('\n').length;
+      log('Received ' + lines + ' lines via fallback', 'ok');
+      processCSV(text, cleanName);
+    } catch (fallbackErr) {
+      $('dlProgress').classList.remove('visible');
+      log('Download failed: ' + (fallbackErr?.message || String(fallbackErr) || 'unknown error'), 'e');
+    }
   }
 }
 
