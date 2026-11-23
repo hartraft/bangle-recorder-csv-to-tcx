@@ -528,7 +528,7 @@ function renderFileList(files) {
     row.className = 'file-row';
     row.innerHTML = `
       <div class="file-radio"></div>
-      <div class="file-name">${f.name}</div>
+      <div class="file-name">${escapeHtml(f.name)}</div>
       <div class="file-meta">${f.source === 'manual' ? 'local file' : (f.kind === 'health' ? 'health summary' : 'Recorder CSV')}</div>`;
     row.addEventListener('click', () => onFileSelect(row, f, list));
     list.appendChild(row);
@@ -592,6 +592,7 @@ function processHealthRaw(content, filename) {
   log('Decoding Health Tracking data ' + filename + '…', 'i');
   healthActivityGroups = [];
   trackPoints = [];
+  tcxBlob = null;
   const header = content.slice(0,7);
   if (header !== 'HEALTH2') {
     log(header === 'HEALTH1' ? 'HEALTH1 has no activity classification, so individual exercise sessions cannot be identified safely.' : 'Unrecognised Health Tracking header: ' + JSON.stringify(header), 'e');
