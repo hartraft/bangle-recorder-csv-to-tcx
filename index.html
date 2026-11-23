@@ -464,12 +464,12 @@ async function listFiles() {
 
     // Run/Run+ only create GPS activity tracks when the separate Recorder app
     // is installed and its "Record Run" setting is enabled.
-    const recorderFiles = files.filter(f => /^recorder(?:\\.log)?(?:\\d+)?\\.csv$/i.test(f));
-    const recorderInstalled = allFiles.some(f => /^recorder\\.(?:app|boot|settings|info)/i.test(f));
+    const recorderFiles = files;
+    const recorderInstalled = allFiles.some(f => f.toLowerCase().startsWith('recorder.') && /(?:app|boot|settings|info)/i.test(f));
 
     if (!recorderFiles.length) {
-      const rawHealth = allFiles.filter(f => /^health-.*\\.raw$/i.test(f));
-      const otherCsv = allFiles.filter(f => /\\.csv$/i.test(f));
+      const rawHealth = allFiles.filter(f => f.toLowerCase().startsWith('health-') && f.toLowerCase().endsWith('.raw'));
+      const otherCsv = allFiles.filter(f => f.toLowerCase().endsWith('.csv'));
       const inventory = allFiles.map(name =>
         '<div class="file-row" style="cursor:default"><div class="file-name">' +
         escapeHtml(name) + '</div><div class="file-meta">' +
