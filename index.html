@@ -529,7 +529,7 @@ function renderFileList(files) {
     row.innerHTML = `
       <div class="file-radio"></div>
       <div class="file-name">${f.name}</div>
-      <div class="file-meta">${f.source === 'manual' ? 'local file' : 'on watch'}</div>`;
+      <div class="file-meta">${f.source === 'manual' ? 'local file' : (f.kind === 'health' ? 'health summary' : 'Recorder CSV')}</div>`;
     row.addEventListener('click', () => onFileSelect(row, f, list));
     list.appendChild(row);
   });
@@ -761,7 +761,7 @@ function buildHealthTCX() {
     x.push('</Track></Lap></Activity>');
   });
   x.push('</Activities></TrainingCenterDatabase>');
-  tcxBlob=new Blob([x.join('\\n')],{type:'application/xml'});
+  tcxBlob=new Blob([x.join('\n')],{type:'application/xml'});
 }
 
 // ── Show preview ─────────────────────────────────────────────────────────────
