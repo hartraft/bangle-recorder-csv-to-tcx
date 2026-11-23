@@ -497,8 +497,12 @@ async function listFiles() {
       }
       return;
     }
-    log('Found ' + recorderFiles.length + ' Recorder activity file(s)', 'ok');
-    renderFileList(recorderFiles.map(name => ({ name, source: 'ble' })));
+    const importableFiles = [
+      ...recorderFiles.map(name => ({ name, source: 'ble', kind: 'recorder' })),
+      ...healthFiles.map(name => ({ name, source: 'ble', kind: 'health' }))
+    ];
+    log('Found ' + recorderFiles.length + ' Recorder CSV(s) and ' + healthFiles.length + ' Health Tracking file(s)', 'ok');
+    renderFileList(importableFiles);
 
   } catch (err) {
     log('List error: ' + err.message, 'e');
@@ -593,7 +597,7 @@ function processHealthRaw(content, filename) {
     log(header === 'HEALTH1' ? 'HEALTH1 has no activity classification, so individual exercise sessions cannot be identified safely.' : 'Unrecognised Health Tracking header: ' + JSON.stringify(header), 'e');
     return;
   }
-  const match = filename.match(/^health-(\\d{4})-(\\d{1,2})\\.raw$/i);
+  const match = filename.match(/^health-(\d{4})-(\d{1,2})\.raw$/i);
   if (!match) { log('Could not determine year/month from filename', 'e'); return; }
   const year=Number(match[1]), month=Number(match[2]);
   const names=['UNKNOWN','NOT_WORN','WALKING','EXERCISE','LIGHT_SLEEP','DEEP_SLEEP'];
