@@ -462,13 +462,37 @@ async function listFiles() {
       f.toLowerCase().includes('recorder') && f.toLowerCase().includes('.csv')
     );
 
-    if (!files.length) {
-      $('fileList').innerHTML = '<div style="font-family:\'Space Mono\',monospace;font-size:11px;color:var(--muted);padding:8px 0">No recorder CSV files found — check log for all files on watch.</div>';
-      log('No recorder .csv files found. All files (' + allFiles.length + '): ' + allFiles.join(', '), 'w');
+    // Run/Run+ only create GPS activity tracks when the separate Recorder app
+    // is installed and its "Record Run" setting is enabled.
+    const recorderFiles = files.filter(f => /^recorder(?:\\.log)?(?:\\d+)?\\.csv$/i.test(f));
+    const recorderInstalled = allFiles.some(f => /^recorder\\.(?:app|boot|settings|info)/i.test(f));
+
+    if (!recorderFiles.length) {
+      const rawHealth = allFiles.filter(f => /^health-.*\\.raw$/i.test(f));
+      const otherCsv = allFiles.filter(f => /\\.csv$/i.test(f));
+      const inventory = allFiles.map(name =>
+        '<div class="file-row" style="cursor:default"><div class="file-name">' +
+        escapeHtml(name) + '</div><div class="file-meta">' +
+        (name.toLowerCase().endsWith('.raw') ? 'binary data' :
+          name.toLowerCase().endsWith('.csv') ? 'CSV' : 'watch file') +
+        '</div></div>'
+      ).join('');
+      $('fileList').innerHTML =
+        '<div class="warn-box visible">' +
+        (recorderInstalled
+          ? '<strong>Recorder app files detected, but no activity CSV exists.</strong><br>Open Recorder on the watch, configure the fields, and start a recording. In Run/Run+ settings, enable Record Run.'
+          : '<strong>The Recorder app does not appear to be installed.</strong><br>Run and Run+ do not save GPS tracks by themselves. Install the separate <a href="https://banglejs.com/apps/?id=recorder" target="_blank" rel="noopener" style="color:var(--cyan)">Recorder app</a>, configure it, and enable "Record Run" in Run/Run+ settings.') +
+        (rawHealth.length ? '<br><br>Found ' + rawHealth.map(escapeHtml).join(', ') + '. These are Health Tracking binary files (periodic health summaries), not running GPS tracks and cannot be imported as Recorder CSVs.' : '') +
+        (otherCsv.length ? '<br><br>Other CSV files: ' + otherCsv.map(escapeHtml).join(', ') : '') +
+        '</div>' +
+        '<details style="margin-top:14px"><summary style="cursor:pointer;font-family:\'Space Mono\',monospace;font-size:11px;color:var(--cyan)">Show all ' + allFiles.length + ' files on watch</summary>' +
+        '<div class="file-list">' + inventory + '</div></details>';
+      log('No Recorder activity CSVs found. Recorder app detected: ' + (recorderInstalled ? 'yes' : 'no') +
+          '. Health raw files: ' + (rawHealth.length ? rawHealth.join(', ') : 'none'), 'w');
       return;
     }
-    log('Found ' + files.length + ' recorder file(s)', 'ok');
-    renderFileList(files.map(name => ({ name, source: 'ble' })));
+    log('Found ' + recorderFiles.length + ' Recorder activity file(s)', 'ok');
+    renderFileList(recorderFiles.map(name => ({ name, source: 'ble' })));
 
   } catch (err) {
     log('List error: ' + err.message, 'e');
@@ -476,6 +500,12 @@ async function listFiles() {
 }
 
 // ── Render file list ─────────────────────────────────────────────────────────
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+}
+
 function renderFileList(files) {
   const list = $('fileList');
   list.innerHTML = '';
