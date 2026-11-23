@@ -334,6 +334,7 @@ input[type="file"] { display: none; }
 // ── State ────────────────────────────────────────────────────────────────────
 let uartConn = null;       // UART.js connection object
 let trackPoints = [];
+let healthActivityGroups = [];
 let tcxBlob = null;
 let chart = null;
 let isBleConnected = false;
@@ -465,6 +466,7 @@ async function listFiles() {
     // Run/Run+ only create GPS activity tracks when the separate Recorder app
     // is installed and its "Record Run" setting is enabled.
     const recorderFiles = files;
+    const healthFiles = allFiles.filter(f => f.toLowerCase().startsWith('health-') && f.toLowerCase().endsWith('.raw'));
     const recorderInstalled = allFiles.some(f => f.toLowerCase().startsWith('recorder.') && /(?:app|boot|settings|info)/i.test(f));
 
     if (!recorderFiles.length) {
@@ -489,6 +491,10 @@ async function listFiles() {
         '<div class="file-list">' + inventory + '</div></details>';
       log('No Recorder activity CSVs found. Recorder app detected: ' + (recorderInstalled ? 'yes' : 'no') +
           '. Health raw files: ' + (rawHealth.length ? rawHealth.join(', ') : 'none'), 'w');
+      if (healthFiles.length) {
+        renderFileList(healthFiles.map(name => ({name, source:'ble', kind:'health'})));
+        $('fileList').insertAdjacentHTML('afterbegin', '<div class="warn-box visible"><strong>Health Tracking data found.</strong><br>Select a month to export detected Exercise periods as non-GPS TCX activities. Samples are ten minutes apart; no route, reliable distance, or exact run start/stop times can be recovered.</div>');
+      }
       return;
     }
     log('Found ' + recorderFiles.length + ' Recorder activity file(s)', 'ok');
@@ -560,11 +566,16 @@ async function downloadFile(filename) {
     fill.style.width = '100%';
     prog.classList.remove('visible');
 
-    if (!content || !content.trim()) throw new Error('File appears to be empty');
-
-    const lines = content.trim().split('\n').length;
-    log('Received ' + lines + ' lines', 'ok');
-    processCSV(content.trim(), cleanName);
+    if (!content || !content.length) throw new Error('File appears to be empty');
+    if (cleanName.toLowerCase().endsWith('.raw')) {
+      log('Received ' + content.length + ' binary characters', 'ok');
+      processHealthRaw(content, cleanName);
+    } else {
+      const csv = content.trim();
+      if (!csv) throw new Error('File appears to be empty');
+      log('Received ' + csv.split('\n').length + ' lines', 'ok');
+      processCSV(csv, cleanName);
+    }
 
   } catch (err) {
     $('dlProgress').classList.remove('visible');
@@ -573,8 +584,45 @@ async function downloadFile(filename) {
 }
 
 // ── Parse CSV ────────────────────────────────────────────────────────────────
+function processHealthRaw(content, filename) {
+  log('Decoding Health Tracking data ' + filename + '…', 'i');
+  healthActivityGroups = [];
+  trackPoints = [];
+  const header = content.slice(0,7);
+  if (header !== 'HEALTH2') {
+    log(header === 'HEALTH1' ? 'HEALTH1 has no activity classification, so individual exercise sessions cannot be identified safely.' : 'Unrecognised Health Tracking header: ' + JSON.stringify(header), 'e');
+    return;
+  }
+  const match = filename.match(/^health-(\\d{4})-(\\d{1,2})\\.raw$/i);
+  if (!match) { log('Could not determine year/month from filename', 'e'); return; }
+  const year=Number(match[1]), month=Number(match[2]);
+  const names=['UNKNOWN','NOT_WORN','WALKING','EXERCISE','LIGHT_SLEEP','DEEP_SLEEP'];
+  const points=[];
+  for(let day=1;day<=31;day++) for(let slot=0;slot<144;slot++) {
+    const offset=8+(((day-1)*145)+slot)*10;
+    if(offset+10>content.length) continue;
+    const b=Array.from(content.slice(offset,offset+10),c=>c.charCodeAt(0)&255);
+    if(b.every(v=>v===255) || (names[b[7]>>5]||'UNKNOWN')!=='EXERCISE') continue;
+    const time=new Date(year,month-1,day,Math.floor(slot/6),(slot%6)*10);
+    if(isNaN(time.getTime())) continue;
+    const lo=b[2], hi=b[3], hr=lo&&hi?(lo+hi)/2:(lo||hi||null);
+    points.push({time,hr,steps:(b[0]<<8)|b[1],lat:NaN,lon:NaN,alt:NaN,spd:NaN});
+  }
+  points.sort((a,b)=>a.time-b.time);
+  if(!points.length){log('No EXERCISE-classified records found. Health Tracking cannot infer Run+ sessions from ordinary step/heart-rate summaries.','w');return;}
+  for(const p of points){
+    let g=healthActivityGroups[healthActivityGroups.length-1];
+    if(!g || p.time-g[g.length-1].time>20*60*1000){g=[];healthActivityGroups.push(g);}
+    g.push(p);
+  }
+  trackPoints=healthActivityGroups.flat();
+  log('Found '+healthActivityGroups.length+' Exercise period(s), '+trackPoints.length+' ten-minute samples','ok');
+  buildTCX(); showPreview(); setStep(3);
+}
+
 function processCSV(content, filename) {
   log('Parsing ' + filename + '…', 'i');
+  healthActivityGroups = [];
   trackPoints = [];
 
   Papa.parse(content, {
@@ -630,6 +678,7 @@ function processCSV(content, filename) {
 
 // ── Build TCX ────────────────────────────────────────────────────────────────
 function buildTCX() {
+  if (healthActivityGroups.length) { buildHealthTCX(); return; }
   const start    = trackPoints[0].time;
   const end      = trackPoints[trackPoints.length - 1].time;
   const duration = (end - start) / 1000;
@@ -690,10 +739,31 @@ function buildTCX() {
   tcxBlob = new Blob([x.join('\n')], { type: 'application/xml' });
 }
 
+function buildHealthTCX() {
+  const x=['<?xml version="1.0" encoding="UTF-8"?>',
+    '<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 https://www8.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd"><Activities>'];
+  healthActivityGroups.forEach(points=>{
+    const start=points[0].time, end=new Date(points[points.length-1].time.getTime()+600000);
+    const duration=Math.max(600,(end-start)/1000), hr=points.filter(p=>p.hr!==null);
+    const avg=hr.length?Math.round(hr.reduce((a,p)=>a+p.hr,0)/hr.length):0;
+    const max=hr.length?Math.round(Math.max(...hr.map(p=>p.hr))):0;
+    x.push('<Activity Sport="Other"><Id>'+start.toISOString()+'</Id>');
+    x.push('<Notes>Generated from Bangle.js Health Tracking ten-minute EXERCISE summaries. No GPS route or distance is available.</Notes>');
+    x.push('<Lap StartTime="'+start.toISOString()+'"><TotalTimeSeconds>'+Math.floor(duration)+'</TotalTimeSeconds><DistanceMeters>0</DistanceMeters><Calories>0</Calories>');
+    if(avg)x.push('<AverageHeartRateBpm><Value>'+avg+'</Value></AverageHeartRateBpm>');
+    if(max)x.push('<MaximumHeartRateBpm><Value>'+max+'</Value></MaximumHeartRateBpm>');
+    x.push('<Intensity>Active</Intensity><TriggerMethod>Manual</TriggerMethod><Track>');
+    points.forEach(p=>{x.push('<Trackpoint><Time>'+p.time.toISOString()+'</Time>');if(p.hr!==null)x.push('<HeartRateBpm><Value>'+Math.round(p.hr)+'</Value></HeartRateBpm>');x.push('</Trackpoint>');});
+    x.push('</Track></Lap></Activity>');
+  });
+  x.push('</Activities></TrainingCenterDatabase>');
+  tcxBlob=new Blob([x.join('\\n')],{type:'application/xml'});
+}
+
 // ── Show preview ─────────────────────────────────────────────────────────────
 function showPreview() {
   const pts   = trackPoints;
-  const sec   = (pts[pts.length - 1].time - pts[0].time) / 1000;
+  const sec   = healthActivityGroups.length ? healthActivityGroups.reduce((sum,g)=>sum+Math.max(600,(g[g.length-1].time-g[0].time)/1000+600),0) : (pts[pts.length-1].time-pts[0].time)/1000;
   const hrPts = pts.filter(p => p.hr !== null);
   const avgHR = hrPts.length ? Math.round(hrPts.reduce((s, p) => s + p.hr, 0) / hrPts.length) : '—';
   const maxHR = hrPts.length ? Math.round(Math.max(...hrPts.map(p => p.hr))) : '—';
@@ -704,7 +774,10 @@ function showPreview() {
     <div class="stat-box"><span class="stat-val">${pts.length}</span><span class="stat-key">Points</span></div>
     <div class="stat-box"><span class="stat-val">${avgHR}</span><span class="stat-key">Avg HR</span></div>
     <div class="stat-box"><span class="stat-val">${maxHR}</span><span class="stat-key">Max HR</span></div>
-    <div class="stat-box"><span class="stat-val">${hasGPS ? '✓' : '—'}</span><span class="stat-key">GPS</span></div>`;
+    <div class="stat-box"><span class="stat-val">${hasGPS ? '✓' : '—'}</span><span class="stat-key">GPS</span></div>
+    ${healthActivityGroups.length ? `<div class="stat-box"><span class="stat-val">${healthActivityGroups.length}</span><span class="stat-key">Exercise periods</span></div>` : ''}`;
+  const oldHealthNote=$('healthExportNote'); if(oldHealthNote) oldHealthNote.remove();
+  if(healthActivityGroups.length) $('statGrid').insertAdjacentHTML('afterend','<p id="healthExportNote" style="font-family:\'Space Mono\',monospace;font-size:10px;color:var(--yellow);line-height:1.7;margin:0 0 14px">Health export contains approximate ten-minute Exercise summaries only. No GPS route, pace, or distance can be recovered. Timestamps are interpreted in this browser’s local timezone.</p>');
 
   $('previewCard').classList.add('visible');
 
@@ -740,7 +813,7 @@ function fmtDur(sec) {
 function tcxFilename() {
   const d = trackPoints[0]?.time;
   const ts = d ? d.toISOString().slice(0, 16).replace('T', '_').replace(':', '-') : 'activity';
-  return `bangle-${ts}.tcx`;
+  return `bangle-${healthActivityGroups.length ? 'health-' : ''}${ts}.tcx`;
 }
 
 // ── Export / Upload ───────────────────────────────────────────────────────────
@@ -773,7 +846,7 @@ function triggerDownload(blob, name) {
 
 // ── Back ─────────────────────────────────────────────────────────────────────
 $('btnBack').addEventListener('click', () => {
-  trackPoints = []; tcxBlob = null;
+  trackPoints = []; healthActivityGroups = []; tcxBlob = null;
   if (chart) { chart.destroy(); chart = null; }
   $('previewCard').classList.remove('visible');
   $('log2').innerHTML = '';
