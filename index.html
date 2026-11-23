@@ -753,13 +753,13 @@ function buildHealthTCX() {
     const avg=hr.length?Math.round(hr.reduce((a,p)=>a+p.hr,0)/hr.length):0;
     const max=hr.length?Math.round(Math.max(...hr.map(p=>p.hr))):0;
     x.push('<Activity Sport="Other"><Id>'+start.toISOString()+'</Id>');
-    x.push('<Notes>Generated from Bangle.js Health Tracking ten-minute EXERCISE summaries. No GPS route or distance is available.</Notes>');
     x.push('<Lap StartTime="'+start.toISOString()+'"><TotalTimeSeconds>'+Math.floor(duration)+'</TotalTimeSeconds><DistanceMeters>0</DistanceMeters><Calories>0</Calories>');
     if(avg)x.push('<AverageHeartRateBpm><Value>'+avg+'</Value></AverageHeartRateBpm>');
     if(max)x.push('<MaximumHeartRateBpm><Value>'+max+'</Value></MaximumHeartRateBpm>');
     x.push('<Intensity>Active</Intensity><TriggerMethod>Manual</TriggerMethod><Track>');
     points.forEach(p=>{x.push('<Trackpoint><Time>'+p.time.toISOString()+'</Time>');if(p.hr!==null)x.push('<HeartRateBpm><Value>'+Math.round(p.hr)+'</Value></HeartRateBpm>');x.push('</Trackpoint>');});
-    x.push('</Track></Lap></Activity>');
+    x.push('</Track></Lap>');
+    x.push('<Notes>Generated from Bangle.js Health Tracking ten-minute EXERCISE summaries. No GPS route or distance is available.</Notes></Activity>');
   });
   x.push('</Activities></TrainingCenterDatabase>');
   tcxBlob=new Blob([x.join('\n')],{type:'application/xml'});
