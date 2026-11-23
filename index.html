@@ -493,7 +493,8 @@ async function listFiles() {
           '. Health raw files: ' + (rawHealth.length ? rawHealth.join(', ') : 'none'), 'w');
       if (healthFiles.length) {
         renderFileList(healthFiles.map(name => ({name, source:'ble', kind:'health'})));
-        $('fileList').insertAdjacentHTML('afterbegin', '<div class="warn-box visible"><strong>Health Tracking data found.</strong><br>Select a month to export detected Exercise periods as non-GPS TCX activities. Samples are ten minutes apart; no route, reliable distance, or exact run start/stop times can be recovered.</div>');
+        $('fileList').insertAdjacentHTML('afterbegin', '<div class="warn-box visible"><strong>Health Tracking data found.</strong><br>Select a month to export detected Exercise periods as non-GPS TCX activities. Samples are ten minutes apart; no route, reliable distance, or exact run start/stop times can be recovered.<br><br>For future mapped runs, install <a href="https://banglejs.com/apps/?id=recorder" target="_blank" rel="noopener" style="color:var(--cyan)">Recorder</a> and enable Record Run in Run/Run+ settings.</div>');
+        $('fileList').insertAdjacentHTML('beforeend', '<details style="margin-top:14px"><summary style="cursor:pointer;font-family:\'Space Mono\',monospace;font-size:11px;color:var(--cyan)">Show all ' + allFiles.length + ' files on watch</summary><div class="file-list">' + inventory + '</div></details>');
       }
       return;
     }
