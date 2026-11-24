@@ -20,7 +20,7 @@ Run/Run+ do not independently save a GPS route. The `runplus_karvonen` file is a
 
 ### Health Tracking monthly RAW files (limited recovery)
 
-The exporter can also read `health-YYYY-MM.raw` files created by Bangle.js Health Tracking. For HEALTH2 files, it finds records classified by the watch as **EXERCISE**, groups adjacent ten-minute samples into approximate periods, and exports those periods as separate TCX activities with available heart-rate summaries.
+The exporter can also read `health-YYYY-MM.raw` files created by Bangle.js Health Tracking (these are written by the Health Tracking app, not by Run+ itself). Each file covers a whole month, so instead of listing the raw month file as one opaque entry, the exporter decodes it and **lists each detected exercise as an individual activity** in the file picker. For HEALTH2 files, it finds records classified by the watch as **EXERCISE**, groups adjacent ten-minute samples into approximate periods, and shows one row per period (start time, duration, average heart rate). Select a single row to export just that activity as a TCX file, or the month row ("All N activities") to export every period of the month as separate TCX `<Activity>` elements with available heart-rate summaries. A downloaded `.raw` file can also be dropped onto the page manually, and is expanded the same way.
 
 **Important limitations:** Health Tracking is a background wellness summary, not a workout recorder. Its samples are approximately ten minutes apart and do not contain GPS coordinates, a route, reliable activity distance, pace, or exact workout start/stop times. These exports are therefore non-GPS `Other` activities with zero distance; they are not reconstructed Run+ runs. Older HEALTH1 files do not contain activity classifications and cannot be segmented into exercise sessions. The export interprets timestamps in the browser's local timezone.
 
@@ -30,7 +30,7 @@ If you need a real running activity with a map and distance, the Recorder app mu
 
 1. Open the page in Chrome or Edge over HTTPS.
 2. Connect the Bangle.js over Bluetooth.
-3. Select a Recorder CSV or a Health Tracking monthly RAW file.
+3. Select a Recorder CSV, an individual health activity, or a Health Tracking month file.
 4. Review the preview and download the generated TCX.
 5. Upload the TCX using Strava's [upload page](https://www.strava.com/upload/select).
 

@@ -264,10 +264,10 @@ input[type="file"] { display: none; }
         <button class="btn-ghost" id="btnDisconnect" disabled>Disconnect</button>
       </div>
 
-      <div class="or-sep">or load a CSV file manually</div>
-      <input type="file" id="fileInput" multiple accept=".csv">
+      <div class="or-sep">or load a file manually</div>
+      <input type="file" id="fileInput" multiple accept=".csv,.raw">
       <div class="drop-zone" id="dropZone">
-        📂 Drop recorder .csv file(s) here, or click to browse
+        📂 Drop recorder .csv or health .raw file(s) here, or click to browse
       </div>
     </div>
   </div>
@@ -278,7 +278,7 @@ input[type="file"] { display: none; }
       <div class="step-badge">2</div>
       <div>
         <div class="step-label">Choose a recording</div>
-        <div class="step-sub">select a recorder CSV to import</div>
+        <div class="step-sub">select a recorder CSV or a health activity to import</div>
       </div>
     </div>
     <div class="step-body">
@@ -335,6 +335,8 @@ input[type="file"] { display: none; }
 let uartConn = null;       // UART.js connection object
 let trackPoints = [];
 let healthActivityGroups = [];
+let healthCache = {};      // health raw filename -> parsed {groups, points, filename}
+let currentListEntries = [];
 let tcxBlob = null;
 let chart = null;
 let isBleConnected = false;
@@ -459,15 +461,41 @@ async function listFiles() {
 
     if (!Array.isArray(allFiles)) throw new Error('Unexpected response: ' + String(result).slice(0, 80));
 
-    const files = allFiles.filter(f =>
-      f.toLowerCase().includes('recorder') && f.toLowerCase().includes('.csv')
-    );
-
     // Run/Run+ only create GPS activity tracks when the separate Recorder app
     // is installed and its "Record Run" setting is enabled.
-    const recorderFiles = files;
+    const recorderFiles = allFiles.filter(f =>
+      f.toLowerCase().includes('recorder') && f.toLowerCase().includes('.csv')
+    );
     const healthFiles = allFiles.filter(f => f.toLowerCase().startsWith('health-') && f.toLowerCase().endsWith('.raw'));
     const recorderInstalled = allFiles.some(f => f.toLowerCase().startsWith('recorder.') && /(?:app|boot|settings|info)/i.test(f));
+
+    // Decode each Health Tracking month up front so the list can show the
+    // individual exercise activities inside it, not just the monthly file.
+    healthCache = {};
+    for (const name of healthFiles) {
+      try {
+        const { cleanName, content } = await fetchBleFile(name);
+        log('Received ' + content.length + ' binary characters of ' + cleanName, 'ok');
+        const parsed = parseHealthRaw(content, cleanName, { quiet: true });
+        if (parsed) healthCache[cleanName] = parsed;
+      } catch (err) {
+        log('Could not read ' + name + ': ' + err.message, 'w');
+      }
+    }
+    const healthEntries = [];
+    healthFiles.forEach(name => {
+      const parsed = healthCache[name];
+      if (parsed && parsed.groups.length) {
+        parsed.groups.forEach((g, i) => healthEntries.push({
+          name: fmtLocalDateTime(g[0].time),
+          meta: healthActivityMeta(g) + ' · from ' + name,
+          source: 'ble', kind: 'health-activity', file: name, groupIndex: i
+        }));
+        healthEntries.push({ name: 'All ' + parsed.groups.length + ' activities · ' + name, meta: 'health month · export all', source: 'ble', kind: 'health', file: name });
+      } else {
+        healthEntries.push({ name, meta: parsed ? 'health summary · no exercise periods found' : 'health summary', source: 'ble', kind: 'health', file: name });
+      }
+    });
 
     if (!recorderFiles.length) {
       const rawHealth = allFiles.filter(f => f.toLowerCase().startsWith('health-') && f.toLowerCase().endsWith('.raw'));
@@ -484,7 +512,7 @@ async function listFiles() {
         (recorderInstalled
           ? '<strong>Recorder app files detected, but no activity CSV exists.</strong><br>Open Recorder on the watch, configure the fields, and start a recording. In Run/Run+ settings, enable Record Run.'
           : '<strong>The Recorder app does not appear to be installed.</strong><br>Run and Run+ do not save GPS tracks by themselves. Install the separate <a href="https://banglejs.com/apps/?id=recorder" target="_blank" rel="noopener" style="color:var(--cyan)">Recorder app</a>, configure it, and enable "Record Run" in Run/Run+ settings.') +
-        (rawHealth.length ? '<br><br>Found ' + rawHealth.map(escapeHtml).join(', ') + '. These are Health Tracking binary files (periodic health summaries), not running GPS tracks and cannot be imported as Recorder CSVs.' : '') +
+        (rawHealth.length ? '<br><br>Found ' + rawHealth.map(escapeHtml).join(', ') + '. These are Health Tracking monthly binary files (periodic health summaries), not running GPS tracks; their detected exercise periods are listed below.' : '') +
         (otherCsv.length ? '<br><br>Other CSV files: ' + otherCsv.map(escapeHtml).join(', ') : '') +
         '</div>' +
         '<details style="margin-top:14px"><summary style="cursor:pointer;font-family:\'Space Mono\',monospace;font-size:11px;color:var(--cyan)">Show all ' + allFiles.length + ' files on watch</summary>' +
@@ -492,17 +520,17 @@ async function listFiles() {
       log('No Recorder activity CSVs found. Recorder app detected: ' + (recorderInstalled ? 'yes' : 'no') +
           '. Health raw files: ' + (rawHealth.length ? rawHealth.join(', ') : 'none'), 'w');
       if (healthFiles.length) {
-        renderFileList(healthFiles.map(name => ({name, source:'ble', kind:'health'})));
-        $('fileList').insertAdjacentHTML('afterbegin', '<div class="warn-box visible"><strong>Health Tracking data found.</strong><br>Select a month to export detected Exercise periods as non-GPS TCX activities. Samples are ten minutes apart; no route, reliable distance, or exact run start/stop times can be recovered.<br><br>For future mapped runs, install <a href="https://banglejs.com/apps/?id=recorder" target="_blank" rel="noopener" style="color:var(--cyan)">Recorder</a> and enable Record Run in Run/Run+ settings.</div>');
+        renderFileList(healthEntries);
+        $('fileList').insertAdjacentHTML('afterbegin', '<div class="warn-box visible"><strong>Health Tracking data found.</strong><br>Each detected Exercise period is listed as an individual activity — select one to export it as a non-GPS TCX activity, or a month row to export all of its activities. Samples are ten minutes apart; no route, reliable distance, or exact run start/stop times can be recovered.<br><br>For future mapped runs, install <a href="https://banglejs.com/apps/?id=recorder" target="_blank" rel="noopener" style="color:var(--cyan)">Recorder</a> and enable Record Run in Run/Run+ settings.</div>');
         $('fileList').insertAdjacentHTML('beforeend', '<details style="margin-top:14px"><summary style="cursor:pointer;font-family:\'Space Mono\',monospace;font-size:11px;color:var(--cyan)">Show all ' + allFiles.length + ' files on watch</summary><div class="file-list">' + inventory + '</div></details>');
       }
       return;
     }
     const importableFiles = [
       ...recorderFiles.map(name => ({ name, source: 'ble', kind: 'recorder' })),
-      ...healthFiles.map(name => ({ name, source: 'ble', kind: 'health' }))
+      ...healthEntries
     ];
-    log('Found ' + recorderFiles.length + ' Recorder CSV(s) and ' + healthFiles.length + ' Health Tracking file(s)', 'ok');
+    log('Found ' + recorderFiles.length + ' Recorder CSV(s) and ' + healthEntries.length + ' Health Tracking item(s) in ' + healthFiles.length + ' month file(s)', 'ok');
     renderFileList(importableFiles);
 
   } catch (err) {
@@ -518,6 +546,7 @@ function escapeHtml(value) {
 }
 
 function renderFileList(files) {
+  currentListEntries = files;
   const list = $('fileList');
   list.innerHTML = '';
   if (!files.length) {
@@ -527,10 +556,13 @@ function renderFileList(files) {
   files.forEach(f => {
     const row = document.createElement('div');
     row.className = 'file-row';
+    row.dataset.name = f.name;
+    row.dataset.source = f.source;
+    row.dataset.kind = f.kind || '';
     row.innerHTML = `
       <div class="file-radio"></div>
       <div class="file-name">${escapeHtml(f.name)}</div>
-      <div class="file-meta">${f.source === 'manual' ? 'local file' : (f.kind === 'health' ? 'health summary' : 'Recorder CSV')}</div>`;
+      <div class="file-meta">${escapeHtml(f.meta || (f.source === 'manual' ? 'local file' : (f.kind === 'health' ? 'health summary' : 'Recorder CSV')))}</div>`;
     row.addEventListener('click', () => onFileSelect(row, f, list));
     list.appendChild(row);
   });
@@ -541,6 +573,10 @@ async function onFileSelect(row, f, list) {
   list.querySelectorAll('.file-row').forEach(r => r.classList.remove('selected'));
   row.classList.add('selected');
 
+  if (f.kind === 'health-activity' || (f.kind === 'health' && (f.parsed || healthCache[f.file || f.name]))) {
+    selectHealthActivity(f);
+    return;
+  }
   if (f.source === 'manual') {
     processCSV(f.content, f.name);
   } else {
@@ -549,7 +585,7 @@ async function onFileSelect(row, f, list) {
 }
 
 // ── Download file over BLE using uart.js espruinoReceiveFile ─────────────────
-async function downloadFile(filename) {
+async function fetchBleFile(filename) {
   // Strip StorageFile chunk suffix if present (e.g. "recorder.log0.csv\1" → "recorder.log0.csv")
   const cleanName = filename.replace(/\\?\x01|\\\d+$/, '');
   const prog = $('dlProgress'), fill = $('progFill');
@@ -572,6 +608,16 @@ async function downloadFile(filename) {
     prog.classList.remove('visible');
 
     if (!content || !content.length) throw new Error('File appears to be empty');
+    return { cleanName, content };
+  } catch (err) {
+    $('dlProgress').classList.remove('visible');
+    throw err;
+  }
+}
+
+async function downloadFile(filename) {
+  try {
+    const { cleanName, content } = await fetchBleFile(filename);
     if (cleanName.toLowerCase().endsWith('.raw')) {
       log('Received ' + content.length + ' binary characters', 'ok');
       processHealthRaw(content, cleanName);
@@ -581,26 +627,22 @@ async function downloadFile(filename) {
       log('Received ' + csv.split('\n').length + ' lines', 'ok');
       processCSV(csv, cleanName);
     }
-
   } catch (err) {
-    $('dlProgress').classList.remove('visible');
     log('Download failed: ' + err.message, 'e');
   }
 }
 
 // ── Parse CSV ────────────────────────────────────────────────────────────────
-function processHealthRaw(content, filename) {
-  log('Decoding Health Tracking data ' + filename + '…', 'i');
-  healthActivityGroups = [];
-  trackPoints = [];
-  tcxBlob = null;
+function parseHealthRaw(content, filename, opts) {
+  const quiet = opts && opts.quiet;
+  if (!quiet) log('Decoding Health Tracking data ' + filename + '…', 'i');
   const header = content.slice(0,7);
   if (header !== 'HEALTH2') {
     log(header === 'HEALTH1' ? 'HEALTH1 has no activity classification, so individual exercise sessions cannot be identified safely.' : 'Unrecognised Health Tracking header: ' + JSON.stringify(header), 'e');
-    return;
+    return null;
   }
   const match = filename.match(/^health-(\d{4})-(\d{1,2})\.raw$/i);
-  if (!match) { log('Could not determine year/month from filename', 'e'); return; }
+  if (!match) { log('Could not determine year/month from filename', 'e'); return null; }
   const year=Number(match[1]), month=Number(match[2]);
   const names=['UNKNOWN','NOT_WORN','WALKING','EXERCISE','LIGHT_SLEEP','DEEP_SLEEP'];
   const points=[];
@@ -615,15 +657,58 @@ function processHealthRaw(content, filename) {
     points.push({time,hr,steps:(b[0]<<8)|b[1],lat:NaN,lon:NaN,alt:NaN,spd:NaN});
   }
   points.sort((a,b)=>a.time-b.time);
-  if(!points.length){log('No EXERCISE-classified records found. Health Tracking cannot infer Run+ sessions from ordinary step/heart-rate summaries.','w');return;}
+  if(!points.length){
+    log('No EXERCISE-classified records found in ' + filename + '. Health Tracking cannot infer Run+ sessions from ordinary step/heart-rate summaries.', 'w');
+    return { groups: [], points: [], filename };
+  }
+  const groups=[];
   for(const p of points){
-    let g=healthActivityGroups[healthActivityGroups.length-1];
-    if(!g || p.time-g[g.length-1].time>20*60*1000){g=[];healthActivityGroups.push(g);}
+    let g=groups[groups.length-1];
+    if(!g || p.time-g[g.length-1].time>20*60*1000){g=[];groups.push(g);}
     g.push(p);
   }
-  trackPoints=healthActivityGroups.flat();
-  log('Found '+healthActivityGroups.length+' Exercise period(s), '+trackPoints.length+' ten-minute samples','ok');
+  if(!quiet) log('Found '+groups.length+' Exercise period(s), '+points.length+' ten-minute samples in '+filename, 'ok');
+  return { groups, points, filename };
+}
+
+function processHealthRaw(content, filename) {
+  healthActivityGroups = [];
+  trackPoints = [];
+  tcxBlob = null;
+  const parsed = parseHealthRaw(content, filename);
+  if (!parsed || !parsed.groups.length) return;
+  healthActivityGroups = parsed.groups;
+  trackPoints = parsed.points;
   buildTCX(); showPreview(); setStep(3);
+}
+
+function selectHealthActivity(f) {
+  const parsed = f.parsed || healthCache[f.file || f.name];
+  if (!parsed) { log('No decoded health data for ' + (f.file || f.name) + ' — press Refresh list', 'e'); return; }
+  const groups = f.groupIndex !== undefined ? [parsed.groups[f.groupIndex]] : parsed.groups;
+  if (!groups.length || !groups[0]) {
+    log('No EXERCISE-classified records found in ' + parsed.filename + '. Health Tracking cannot infer individual sessions from ordinary step/heart-rate summaries.', 'w');
+    return;
+  }
+  healthActivityGroups = groups;
+  trackPoints = groups.flat();
+  tcxBlob = null;
+  log('Selected ' + (groups.length > 1
+    ? groups.length + ' exercise periods from ' + parsed.filename
+    : 'exercise period starting ' + groups[0][0].time.toLocaleString()), 'ok');
+  buildTCX(); showPreview(); setStep(3);
+}
+
+function fmtLocalDateTime(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function healthActivityMeta(g) {
+  const mins = Math.round((g[g.length-1].time - g[0].time) / 60000) + 10;
+  const hrPts = g.filter(p => p.hr !== null);
+  const avg = hrPts.length ? Math.round(hrPts.reduce((s, p) => s + p.hr, 0) / hrPts.length) : null;
+  return (mins >= 60 ? Math.floor(mins/60) + 'h ' + (mins%60) + 'm' : mins + ' min') + (avg ? ' · avg HR ' + avg : '');
 }
 
 function processCSV(content, filename) {
@@ -873,23 +958,41 @@ dropZone.addEventListener('drop', e => {
 fileInput.addEventListener('change', e => { loadLocalFiles([...e.target.files]); fileInput.value = ''; });
 
 function loadLocalFiles(files) {
-  const csvs = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
-  if (!csvs.length) { log('No CSV files found', 'w'); return; }
+  const accepted = files.filter(f => /\.(csv|raw)$/i.test(f.name));
+  if (!accepted.length) { log('No .csv or .raw files found', 'w'); return; }
   const items = [];
   let n = 0;
-  csvs.forEach(f => {
+  accepted.forEach(f => {
     const r = new FileReader();
     r.onload = ev => {
-      items.push({ name: f.name, content: ev.target.result, source: 'manual' });
-      if (++n === csvs.length) {
+      if (/\.raw$/i.test(f.name)) {
+        const u8 = new Uint8Array(ev.target.result);
+        let s = '';
+        for (let i = 0; i < u8.length; i += 8192)
+          s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+        const parsed = parseHealthRaw(s, f.name);
+        if (!parsed) return;
+        if (parsed.groups.length) {
+          parsed.groups.forEach((g, i) => items.push({
+            name: fmtLocalDateTime(g[0].time),
+            meta: healthActivityMeta(g) + ' · from ' + f.name,
+            source: 'manual', kind: 'health-activity', parsed, groupIndex: i
+          }));
+          items.push({ name: 'All ' + parsed.groups.length + ' activities · ' + f.name, meta: 'health month · local file', source: 'manual', kind: 'health', parsed });
+        } else {
+          items.push({ name: f.name, meta: 'health summary · local file · no exercise periods found', source: 'manual', kind: 'health', parsed });
+        }
+      } else {
+        items.push({ name: f.name, content: ev.target.result, source: 'manual', kind: 'recorder' });
+      }
+      if (++n === accepted.length) {
         setStep(2);
-        // Add to or replace the file list
-        const existing = [...$('fileList').querySelectorAll('.file-row')].map(r => ({ name: r.dataset.name, source: r.dataset.source }));
-        renderFileList([...existing.filter(e => e.source !== 'manual'), ...items]);
-        log('Loaded ' + items.length + ' local file(s)', 'ok');
+        // Add to or replace the manual entries in the file list
+        renderFileList([...currentListEntries.filter(e => e.source !== 'manual'), ...items]);
+        log('Loaded ' + items.length + ' item(s) from ' + accepted.length + ' local file(s)', 'ok');
       }
     };
-    r.readAsText(f);
+    if (/\.raw$/i.test(f.name)) r.readAsArrayBuffer(f); else r.readAsText(f);
   });
 }
 </script>
